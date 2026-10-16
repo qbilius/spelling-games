@@ -256,6 +256,9 @@ one
 two
 because</textarea>
     </label>
+    <div class="field"><span>Send this list to a phone</span>
+      <button class="btn" id="linkBtn" type="button">Make link</button>
+    </div>
     <label class="field"><span>Voice</span><select id="voice"></select></label>
     <label class="field"><span>Speed</span><input id="rate" type="range" min="0.5" max="1.2" step="0.05" value="0.8"></label>
     <div class="toggles">
@@ -578,9 +581,61 @@ $('words').value = store.get('bee.words') ?? $('words').value;
 ['sound','music'].forEach(k=>{ const v=store.get('bee.'+k); if(v!==null) $(k).checked = v==='1'; $(k).onchange=()=>{ store.set('bee.'+k,$(k).checked?'1':'0'); if(k==='music' && !$(k).checked) stopMusic() } });
 const r = store.get('bee.rate'); if(r) $('rate').value = r;
 $('rate').oninput = ()=>store.set('bee.rate',$('rate').value);
-$('words').oninput = ()=>{ store.set('bee.words',$('words').value); renderSets() };
+$('words').oninput = ()=>{ store.set('bee.words',$('words').value); renderSets(); refreshShare() };
 $('voice').onchange = ()=>{ const v=voices[$('voice').value]; if(v) store.set('bee.voice',v.name); say('Hello') };
 if(synth){ loadVoices(); synth.onvoiceschanged = loadVoices }
+
+// ---------- share link ----------
+const B64 = {
+  to: b => { let s=''; for(const x of b) s += String.fromCharCode(x);
+    return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'') },
+  from: s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), c=>c.charCodeAt(0))
+};
+async function pack(text){
+  const bytes = new TextEncoder().encode(text);
+  if(!window.CompressionStream) return 'r' + B64.to(bytes);
+  const cs = new CompressionStream('deflate-raw'), w = cs.writable.getWriter();
+  w.write(bytes); w.close();
+  return 'z' + B64.to(new Uint8Array(await new Response(cs.readable).arrayBuffer()));
+}
+async function unpack(code){
+  const data = B64.from(code.slice(1));
+  if(code[0] !== 'z') return new TextDecoder().decode(data);
+  const ds = new DecompressionStream('deflate-raw'), w = ds.writable.getWriter();
+  w.write(data); w.close();
+  return new Response(ds.readable).text();
+}
+let shareUrl = '';
+async function refreshShare(){
+  const list = parseWords();
+  shareUrl = list.length ? location.origin + location.pathname + '?w=' + await pack(list.join('\n')) : '';
+}
+let linkTimer;
+function flashLabel(text){
+  clearTimeout(linkTimer);
+  $('linkBtn').textContent = text;
+  linkTimer = setTimeout(()=>{ $('linkBtn').textContent = 'Make link' }, 1600);
+}
+function copyFallback(text){           // older browsers, or clipboard access refused
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.setAttribute('readonly','');
+  ta.style.cssText = 'position:fixed;top:-100px;opacity:0';
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try{ ok = document.execCommand('copy') }catch(e){}
+  ta.remove();
+  return ok;
+}
+$('linkBtn').onclick = ()=>{
+  if(!shareUrl) return;
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(shareUrl).then(
+      ()=>flashLabel('Copied!'),
+      ()=>flashLabel(copyFallback(shareUrl) ? 'Copied!' : 'Could not copy'));
+  } else {
+    flashLabel(copyFallback(shareUrl) ? 'Copied!' : 'Could not copy');
+  }
+};
 
 // ---------- controls ----------
 $('tiles').onclick = e=>{ const b = e.target.closest('.tile'); if(b) tap(b) };
@@ -598,7 +653,21 @@ $('peekBtn').onclick = ()=>{
 $('contBtn').onclick = keepGoing;
 
 // ---------- boot ----------
-renderScore(); openMenu();
+(async function boot(){
+  const code = new URLSearchParams(location.search).get('w');
+  if(code){
+    try{
+      const text = (await unpack(code)).trim();
+      if(text){
+        if(text !== store.get('bee.words')){ R = null; P.mastery = {} }
+        $('words').value = text; store.set('bee.words', text); save();
+      }
+    }catch(e){ console.warn('could not read the word list from the link', e) }
+    try{ history.replaceState(null, '', location.pathname) }catch(e){}
+  }
+  await refreshShare();
+  renderScore(); openMenu();
+})();
 </script>
 </body>
 </html>
