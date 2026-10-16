@@ -371,7 +371,7 @@ function loadVoices(){
   const saved = store.get('bee.voice'), sel = $('voice'); sel.innerHTML = '';
   voices.forEach((v,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=`${v.name} (${v.lang})`; sel.appendChild(o) });
   let pick = voices.findIndex(v=>v.name===saved);
-  if(pick<0) pick = voices.findIndex(v=>/^en-GB/i.test(v.lang));
+  if(pick<0) pick = voices.findIndex(v=>/^en-US/i.test(v.lang));
   if(pick<0) pick = voices.findIndex(v=>/^en/i.test(v.lang));
   if(pick>=0) sel.value = pick;
 }
