@@ -49,12 +49,16 @@ main{flex:1;display:flex;flex-direction:column;align-items:center;gap:18px;paddi
 .timer{width:200px;max-width:70%;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
 .timer span{display:block;height:100%;background:var(--sky);transform-origin:left}
 .slots{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
-.slot{width:40px;height:52px;border-bottom:4px solid var(--muted);display:grid;place-items:end center;font:700 2rem/1 var(--display);padding-bottom:4px;box-sizing:border-box}
+.slot{width:40px;height:52px;background:none;border-width:0 0 4px;border-style:solid;border-color:var(--muted);
+  display:grid;place-items:end center;font:700 2rem/1 var(--display);color:inherit;padding:0 0 4px;box-sizing:border-box;
+  cursor:pointer;touch-action:manipulation}
+.slot:disabled{cursor:default}
 .slot.space{width:18px;border-color:transparent}
-.slot.filled{border-color:var(--ok);color:var(--ok)}
-.slot.next{border-color:var(--sky)}
-.slots.win .slot{border-color:var(--ok)}
-.slots.miss .slot{border-color:var(--bee-dark);color:var(--ink)}
+.slot.filled{border-color:var(--sky)}
+.slot.next{border-color:var(--ink)}
+.slots.win .slot{border-color:var(--ok);color:var(--ok)}
+.slots.miss .slot{border-color:var(--bad);color:var(--bad)}
+.answer{font:700 clamp(1.6rem,7vw,2.2rem) var(--display);letter-spacing:.06em;color:var(--ok)}
 
 .tiles{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:420px}
 .tile{width:58px;height:58px;border-radius:14px;border:none;background:var(--card);box-shadow:0 5px 0 var(--line),0 0 0 2px var(--line) inset;font:700 1.8rem var(--display);color:var(--ink);cursor:pointer;touch-action:manipulation}
@@ -128,7 +132,10 @@ canvas#fx{position:fixed;inset:0;pointer-events:none;z-index:10}
     <div class="board" id="board"></div>
     <div class="tiles" id="tiles"></div>
     <div class="feedback" id="feedback"></div>
-    <button class="btn" id="peekBtn" type="button">👀 Peek</button>
+    <div class="row" style="width:100%">
+      <button class="btn" id="peekBtn" type="button">👀 Peek</button>
+      <button class="btn go" id="okBtn" type="button" disabled>✓ Done</button>
+    </div>
   </main>
 
   <main id="done" hidden>
@@ -284,8 +291,8 @@ let voices = [];
 let P = { mastery:{}, points:0, streak:0 };          // long-term progress
 let R = null;                                         // current round
 try{ P = Object.assign(P, JSON.parse(store.get('bee.p'))||{}) }catch(e){}
-try{ R = JSON.parse(store.get('bee.r2')); if(R && !Array.isArray(R.recent)) R = null }catch(e){ R = null }
-const save = ()=>{ store.set('bee.p', JSON.stringify(P)); store.set('bee.r2', JSON.stringify(R)) };
+try{ R = JSON.parse(store.get('bee.r3')); if(R && !Array.isArray(R.recent)) R = null }catch(e){ R = null }
+const save = ()=>{ store.set('bee.p', JSON.stringify(P)); store.set('bee.r3', JSON.stringify(R)) };
 
 // ---------- audio ----------
 let ac;
@@ -439,7 +446,9 @@ function nextItem(){
     word = c[Math.floor(Math.random()*c.length)];
     mode = R.relearn.includes(word) ? 'learn' : 'test';
   }
-  R.item = { word, mode, pos:0, mistakes:0, over:false }; R.last = word; save();
+  R.item = { word, mode, placed:[], peeked:false, over:false };
+  R.item.tray = makeTray(R.item);
+  R.last = word; save();
   renderItem(true);
 }
 function renderDots(){
@@ -452,7 +461,9 @@ function renderItem(fresh){
   $('stageTitle').textContent = it.mode==='learn' ? 'Look and remember' : 'Listen and spell';
   $('peekBtn').textContent = it.mode==='learn' ? '🔁 Show again' : '👀 Peek';
   $('peekBtn').disabled = false;
-  if(it.mode==='learn') flash(); else { buildTiles(); if(fresh) later(()=>say(it.word), 250) }
+  if(!it.tray){ it.tray = makeTray(it); it.placed = [] }
+  if(it.mode==='learn' && !it.placed.length) flash();
+  else { buildBoard(); if(fresh && it.mode==='test') later(()=>say(it.word), 250) }
 }
 function flash(){
   const it = R.item, ms = 2200 + it.word.length*180;
@@ -462,73 +473,91 @@ function flash(){
   bar.animate([{transform:'scaleX(1)'},{transform:'scaleX(0)'}], {duration:ms, fill:'forwards'});
   later(()=>say(it.word), 150);
   let hidden = false;
-  const hide = ()=>{ if(hidden) return; hidden = true; buildTiles() };
+  const hide = ()=>{ if(hidden) return; hidden = true; buildBoard() };
   $('flashWord').onclick = hide;
   later(hide, ms);
 }
-function nextPos(){ const w = R.item.word; while(R.item.pos < w.length && w[R.item.pos]===' ') R.item.pos++ }
-function buildTiles(){
-  const it = R.item, w = it.word;
-  nextPos();
-  $('board').innerHTML = `<div class="slots" id="slots">${[...w].map((ch,i)=>
-    ch===' ' ? '<span class="slot space"></span>' : `<span class="slot${i<it.pos?' filled':''}${i===it.pos?' next':''}">${i<it.pos?esc(ch):''}</span>`).join('')}</div>`;
-  let letters = [...w].filter(c=>c!==' ');
-  if(it.mode==='test'){
-    const pool = 'abcdefghijklmnoprstuwy'.split('').filter(c=>!w.toLowerCase().includes(c));
-    letters = letters.concat(shuffle(pool).slice(0, Math.min(3, Math.max(2, Math.round(letters.length/2)))));
+const letters = w => [...w].filter(c => c !== ' ');
+function makeTray(it){
+  let ls = letters(it.word);
+  if(it.mode === 'test'){
+    const pool = 'abcdefghijklmnoprstuwy'.split('').filter(c => !it.word.toLowerCase().includes(c));
+    ls = ls.concat(shuffle(pool).slice(0, Math.min(3, Math.max(2, Math.round(ls.length/2)))));
   }
   let order;
-  do { order = shuffle(letters.slice()) } while(letters.length>2 && order.join('')===letters.join(''));
-  // mark tiles already used (on resume)
-  const usedCount = {}; [...w.slice(0,it.pos)].forEach(c=>{ if(c!==' ') usedCount[c]=(usedCount[c]||0)+1 });
-  $('tiles').innerHTML = order.map(ch=>{
-    const used = usedCount[ch] > 0; if(used) usedCount[ch]--;
-    return `<button class="tile${used?' used':''}" data-ch="${esc(ch)}">${esc(ch)}</button>`;
-  }).join('');
+  do { order = shuffle(ls.slice()) } while(ls.length > 2 && order.join('') === letters(it.word).join(''));
+  return order;
 }
-function tap(btn){
-  const it = R.item; if(!it || it.over || btn.classList.contains('used')) return;
+const built = it => it.placed.map(i => it.tray[i]).join('');
+function buildBoard(){
+  const it = R.item, full = it.placed.length === letters(it.word).length;
+  let k = 0;
+  $('board').innerHTML = `<div class="slots" id="slots">${[...it.word].map(ch => {
+    if(ch === ' ') return '<span class="slot space"></span>';
+    const i = k++, has = i < it.placed.length;
+    return `<button class="slot${has ? ' filled' : ''}${i === it.placed.length ? ' next' : ''}" data-i="${i}"`
+      + `${has ? '' : ' disabled'} aria-label="${has ? 'Remove letter' : 'Empty'}">${has ? esc(it.tray[it.placed[i]]) : ''}</button>`;
+  }).join('')}</div>`;
+  $('tiles').innerHTML = it.tray.map((ch, i) =>
+    `<button class="tile${it.placed.includes(i) ? ' used' : ''}" data-i="${i}">${esc(ch)}</button>`).join('');
+  $('okBtn').disabled = !full || it.over;
+}
+function tapTile(btn){
+  const it = R.item; if(!it || it.over) return;
   startMusic();
-  const w = it.word, ch = btn.dataset.ch;
-  if(ch === w[it.pos]){
-    btn.classList.add('used'); tick();
-    it.pos++; nextPos(); save();
-    const slots = [...$('slots').children];
-    slots.forEach((s,i)=>{ s.classList.toggle('next', i===it.pos); if(i<it.pos && w[i]!==' '){ s.textContent = w[i]; s.classList.add('filled') } });
-    if(it.pos >= w.length) complete();
-  } else {
-    btn.classList.add('wrong'); shake(btn); buzz();
-    setTimeout(()=>btn.classList.remove('wrong'), 450);
-    it.mistakes++;
-    if(it.mode==='test'){ P.points = Math.max(0, P.points-1); P.streak = 0; renderScore(); bump('pointsPill') }
-    save();
-  }
+  const i = +btn.dataset.i;
+  if(it.placed.includes(i) || it.placed.length >= letters(it.word).length) return;
+  it.placed.push(i); tick(); save(); buildBoard();
 }
-function complete(){
-  const it = R.item, w = it.word; it.over = true; $('peekBtn').disabled = true;
-  if(it.mode==='learn'){
+function tapSlot(btn){
+  const it = R.item; if(!it || it.over) return;
+  const i = +btn.dataset.i;
+  if(i >= it.placed.length) return;
+  it.placed.splice(i, 1); tick(); save(); buildBoard();
+}
+function answerHtml(word){ return `<div class="answer">${esc(word)}</div>` }
+function check(){
+  const it = R.item, w = it.word;
+  if(!it || it.over || it.placed.length !== letters(w).length) return;
+  const right = built(it) === letters(w).join('');
+  if(!right && it.mode === 'learn'){          // the learning stage never penalizes
+    shake($('slots')); buzz();
+    $('feedback').innerHTML = '<div class="verdict bad">Not quite. Look again!</div>';
+    it.placed = []; save();
+    return later(()=>{ $('feedback').innerHTML = ''; flash() }, 1200);
+  }
+  it.over = true; $('peekBtn').disabled = true; $('okBtn').disabled = true;
+  if(right && it.mode === 'learn'){
     if(!R.learned.includes(w)) R.learned.push(w);
-    R.relearn = R.relearn.filter(x=>x!==w);
+    R.relearn = R.relearn.filter(x => x !== w);
     P.points += 2; small(); say(w);
     $('slots').classList.add('win');
     $('feedback').innerHTML = `<div class="verdict ok">Nice!</div><div class="points ok">+2 ⭐</div>`;
     save(); renderScore(); bump('pointsPill');
     later(nextItem, 1100);
-  } else if(it.mistakes===0){
-    P.streak++; const d = 10 + Math.min(P.streak-1,5)*2;
+  } else if(right && it.peeked){              // correct, but it was shown, so no mastery
+    P.points += 2; small(); say(w);
+    $('slots').classList.add('win');
+    $('feedback').innerHTML = `<div class="verdict ok">Nice!</div><div class="points ok">+2 ⭐</div>`;
+    save(); renderScore(); bump('pointsPill');
+    later(nextItem, 1200);
+  } else if(right){
+    P.streak++; const d = 10 + Math.min(P.streak-1, 5)*2;
     P.points += d; P.mastery[w] = m(w)+1;
-    if(P.mastery[w]>=NEED) R.recent.push(w);
+    if(P.mastery[w] >= NEED) R.recent.push(w);
     happy(); confetti(); $('slots').classList.add('win');
-    $('feedback').innerHTML = `<div class="verdict ok">${P.mastery[w]>=NEED?'Learned! 🎓':'Great job!'}</div><div class="points ok">+${d} ⭐</div>`;
+    $('feedback').innerHTML = `<div class="verdict ok">${P.mastery[w] >= NEED ? 'Learned! 🎓' : 'Great job!'}</div>`
+      + `<div class="points ok">+${d} ⭐</div>`;
     save(); renderScore(); renderDots(); bump('pointsPill');
     later(nextItem, 1400);
   } else {
-    P.mastery[w] = 0; P.streak = 0;
+    P.points = Math.max(0, P.points - 5); P.mastery[w] = 0; P.streak = 0;
     if(!R.relearn.includes(w)) R.relearn.push(w);
-    $('slots').classList.add('miss'); say(w);
-    $('feedback').innerHTML = `<div class="verdict bad">Almost! Let's practise it again.</div>`;
-    save(); renderScore(); renderDots();
-    later(nextItem, 1800);
+    $('slots').classList.add('miss'); shake($('slots')); buzz(); say(w);
+    $('feedback').innerHTML = '<div class="verdict bad">Almost!</div>' + answerHtml(w)
+      + '<div class="points bad">-5 ⭐</div>';
+    save(); renderScore(); renderDots(); bump('pointsPill');
+    later(nextItem, 2400);
   }
 }
 const CHEERS = ['Awesome!','Super speller!','You rock!','Fantastic!','Brilliant!','Way to go!'];
@@ -638,17 +667,19 @@ $('linkBtn').onclick = ()=>{
 };
 
 // ---------- controls ----------
-$('tiles').onclick = e=>{ const b = e.target.closest('.tile'); if(b) tap(b) };
+$('tiles').onclick = e=>{ const b = e.target.closest('.tile'); if(b) tapTile(b) };
+$('board').onclick = e=>{ const b = e.target.closest('.slot'); if(b) tapSlot(b) };
+$('okBtn').onclick = check;
 $('speakBtn').onclick = ()=>{ startMusic(); R && R.item && say(R.item.word) };
 $('peekBtn').onclick = ()=>{
   const it = R && R.item; if(!it || it.over) return;
   clearTimers();
-  if(it.mode==='learn'){ it.pos = 0; return flash() }
-  it.mistakes++; save();
-  const s = $('slots'); const keep = s.innerHTML;
-  s.innerHTML = `<div class="flash" style="font-size:2.4rem">${esc(it.word)}</div>`;
+  if(it.mode === 'learn'){ it.placed = []; save(); return flash() }
+  it.peeked = true; save();
+  const box = $('slots');
+  box.innerHTML = `<div class="flash" style="font-size:2.4rem">${esc(it.word)}</div>`;
   say(it.word);
-  later(()=>{ s.innerHTML = keep }, 1500);
+  later(buildBoard, 1500);
 };
 $('contBtn').onclick = keepGoing;
 
